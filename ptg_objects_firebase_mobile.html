@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html lang="bg">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PTG Обекти</title>
+<meta name="theme-color" content="#2e7d32">
+
+<style>
+*{box-sizing:border-box}
+body{font-family:Arial,sans-serif;margin:0;background:#eeeeee;color:#111}
+.app{max-width:720px;margin:auto;background:#fff;min-height:100vh;padding:14px}
+h1{margin:0 0 12px;font-size:28px}
+h2{font-size:20px;margin:18px 0 8px}
+label{font-weight:bold}
+input,textarea{width:100%;padding:13px;font-size:17px;border:1px solid #bbb;border-radius:9px;margin:5px 0 12px}
+textarea{min-height:120px;resize:vertical}
+button{width:100%;padding:14px;font-size:17px;border:0;border-radius:10px;background:#2e7d32;color:white;margin:6px 0}
+button.gray{background:#666}
+button.red{background:#b71c1c}
+button.blue{background:#1565c0}
+.row{display:flex;gap:8px}
+.row button{width:50%}
+.card{border:1px solid #ccc;border-radius:12px;padding:12px;margin:10px 0;background:#fafafa}
+.card.active{border:3px solid #2e7d32;background:#eef8ee}
+.price{font-weight:bold;color:#2e7d32}
+.small{font-size:13px;color:#666}
+.material{display:flex;gap:10px;align-items:flex-start;border-bottom:1px solid #ddd;padding:10px 0}
+.material input[type=checkbox]{width:26px;height:26px;margin:0;flex:0 0 auto}
+.material-text{flex:1;font-size:17px}
+.done{text-decoration:line-through;color:#777}
+.hidden{display:none}
+.status{padding:8px;border-radius:8px;background:#f1f1f1;margin-bottom:8px;font-size:14px}
+.top-actions{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+</style>
+</head>
+
+<body>
+<div class="app">
+<h1>PTG Обекти</h1>
+
+<div class="status" id="status">Зареждане...</div>
+
+<div class="top-actions">
+  <button class="blue" onclick="newObject()">+ Нов обект</button>
+  <button class="gray" onclick="clearSelection()">Списък</button>
+</div>
+
+<h2>Обекти</h2>
+<div id="objectsList"></div>
+
+<div id="editBox" class="hidden">
+<h2>Обект</h2>
+
+<label>Име на обект</label>
+<input id="objName" placeholder="Например: НС Стампс">
+
+<label>Обща цена</label>
+<input id="objPrice" placeholder="Например: 8300 €">
+
+<label>Бележки / описание</label>
+<textarea id="objNotes" placeholder="Какво сме оферирали, условия, срокове, особености..."></textarea>
+
+<div class="row">
+  <button onclick="saveObject()">Запази</button>
+  <button class="red" onclick="deleteObject()">Изтрий</button>
+</div>
+
+<h2>Материали</h2>
+
+<label>Нов материал</label>
+<input id="newMaterialText" placeholder="Например: Кабел 3х4 - 50м">
+
+<button onclick="addMaterial()">+ Добави материал</button>
+
+<div id="materialsList"></div>
+</div>
+
+</div>
+
+<script type="module">
+/*
+==========================================================
+PTG ОБЕКТИ - FIREBASE ВЕРСИЯ
+
+СТЪПКИ:
+1. Отиди на https://console.firebase.google.com
+2. Create project
+3. Build → Firestore Database → Create database
+4. Start in test mode
+5. Project settings → General → Your apps → Web app
+6. Копирай firebaseConfig и го замени долу.
+==========================================================
+*/
+
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.4/firebase-app.js";
+import {
+  getFirestore,
+  collection,
+  doc,
+  addDoc,
+  setDoc,
+  deleteDoc,
+  onSnapshot,
+  query,
+  orderBy,
+  serverTimestamp
+} from "https://www.gstatic.com/firebasejs/10.12.4/firebase-firestore.js";
+
+const firebaseConfig = {
+  apiKey: "PASTE_HERE",
+  authDomain: "PASTE_HERE",
+  projectId: "PASTE_HERE",
+  storageBucket: "PASTE_HERE",
+  messagingSenderId: "PASTE_HERE",
+  appId: "PASTE_HERE"
+};
+
+const app = initializeApp(firebaseConfig);
+const db = getFirestore(app);
+
+let objects = [];
+let materials = [];
+let selectedObjectId = null;
+
+const $ = (id) => document.getElementById(id);
+
+function setStatus(text){ $("status").textContent = text; }
+
+function escapeHtml(s){
+  return String(s || "")
+    .replaceAll("&","&amp;")
+    .replaceAll("<","&lt;")
+    .replaceAll(">","&gt;")
+    .replaceAll('"',"&quot;");
+}
+
+function formatDate(value){
+  try{
+    if(value && value.toDate){
+      return value.toDate().toLocaleString("bg-BG");
+    }
+  }catch(e){}
+  return "";
+}
+
+function renderObjects(){
+  const box = $("objectsList");
+  box.innerHTML = "";
+
+  if(objects.length === 0){
+    box.innerHTML = '<div class="small">Няма обекти.</div>';
+    return;
+  }
+
+  objects.forEach(o=>{
+    const div = document.createElement("div");
+    div.className = "card" + (o.id === selectedObjectId ? " active" : "");
+    div.onclick = () => selectObject(o.id);
+
+    const boughtInfo = getBoughtInfo(o.id);
+
+    div.innerHTML = `
+      <div><strong>${escapeHtml(o.name || "Без име")}</strong></div>
+      <div class="price">${escapeHtml(o.price || "")}</div>
+      <div class="small">${escapeHtml((o.notes || "").slice(0, 100))}</div>
+      <div class="small">Материали: ${boughtInfo}</div>
+    `;
+    box.appendChild(div);
+  });
+}
+
+function getBoughtInfo(objectId){
+  const list = materials.filter(m => m.objectId === objectId);
+  if(list.length === 0) return "0";
+  const bought = list.filter(m => m.bought).length;
+  return `${bought}/${list.length} купени`;
+}
+
+function renderMaterials(){
+  const box = $("materialsList");
+  box.innerHTML = "";
+
+  if(!selectedObjectId){
+    return;
+  }
+
+  const list = materials.filter(m => m.objectId === selectedObjectId);
+
+  if(list.length === 0){
+    box.innerHTML = '<div class="small">Няма материали.</div>';
+    return;
+  }
+
+  list.forEach(m=>{
+    const div = document.createElement("div");
+    div.className = "material";
+    div.innerHTML = `
+      <input type="checkbox" ${m.bought ? "checked" : ""}>
+      <div class="material-text ${m.bought ? "done" : ""}">${escapeHtml(m.text)}</div>
+      <button class="red" style="width:70px;padding:8px;font-size:14px;margin:0">X</button>
+    `;
+
+    div.querySelector("input").addEventListener("change", async (e)=>{
+      await toggleMaterial(m.id, e.target.checked);
+    });
+
+    div.querySelector("button").addEventListener("click", async (e)=>{
+      e.stopPropagation();
+      await deleteMaterial(m.id);
+    });
+
+    box.appendChild(div);
+  });
+}
+
+function selectObject(id){
+  selectedObjectId = id;
+  const o = objects.find(x => x.id === id);
+  if(!o) return;
+
+  $("objName").value = o.name || "";
+  $("objPrice").value = o.price || "";
+  $("objNotes").value = o.notes || "";
+  $("newMaterialText").value = "";
+
+  $("editBox").classList.remove("hidden");
+  renderObjects();
+  renderMaterials();
+}
+
+function clearSelection(){
+  selectedObjectId = null;
+  $("editBox").classList.add("hidden");
+  renderObjects();
+}
+
+window.newObject = function(){
+  selectedObjectId = null;
+  $("objName").value = "";
+  $("objPrice").value = "";
+  $("objNotes").value = "";
+  $("newMaterialText").value = "";
+  $("editBox").classList.remove("hidden");
+  $("materialsList").innerHTML = '<div class="small">Първо запази обекта, после добави материали.</div>';
+  renderObjects();
+};
+
+window.clearSelection = clearSelection;
+
+window.saveObject = async function(){
+  const name = $("objName").value.trim();
+  if(!name){
+    alert("Въведи име на обект.");
+    return;
+  }
+
+  const data = {
+    name,
+    price: $("objPrice").value.trim(),
+    notes: $("objNotes").value.trim(),
+    updatedAt: serverTimestamp()
+  };
+
+  try{
+    if(selectedObjectId){
+      await setDoc(doc(db, "objects", selectedObjectId), data, { merge: true });
+    }else{
+      data.createdAt = serverTimestamp();
+      const ref = await addDoc(collection(db, "objects"), data);
+      selectedObjectId = ref.id;
+    }
+    setStatus("Обектът е запазен");
+  }catch(err){
+    alert("Грешка при запис: " + err.message);
+  }
+};
+
+window.deleteObject = async function(){
+  if(!selectedObjectId){
+    $("editBox").classList.add("hidden");
+    return;
+  }
+
+  if(!confirm("Да изтрия ли обекта и материалите към него?")) return;
+
+  try{
+    const list = materials.filter(m => m.objectId === selectedObjectId);
+    for(const m of list){
+      await deleteDoc(doc(db, "materials", m.id));
+    }
+    await deleteDoc(doc(db, "objects", selectedObjectId));
+    selectedObjectId = null;
+    $("editBox").classList.add("hidden");
+    setStatus("Обектът е изтрит");
+  }catch(err){
+    alert("Грешка при изтриване: " + err.message);
+  }
+};
+
+window.addMaterial = async function(){
+  if(!selectedObjectId){
+    alert("Първо избери или запази обект.");
+    return;
+  }
+
+  const text = $("newMaterialText").value.trim();
+  if(!text){
+    alert("Въведи материал.");
+    return;
+  }
+
+  try{
+    await addDoc(collection(db, "materials"), {
+      objectId: selectedObjectId,
+      text,
+      bought: false,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp()
+    });
+    $("newMaterialText").value = "";
+    setStatus("Материалът е добавен");
+  }catch(err){
+    alert("Грешка при добавяне: " + err.message);
+  }
+};
+
+async function toggleMaterial(id, bought){
+  try{
+    await setDoc(doc(db, "materials", id), {
+      bought,
+      updatedAt: serverTimestamp()
+    }, { merge: true });
+  }catch(err){
+    alert("Грешка при отметка: " + err.message);
+  }
+}
+
+async function deleteMaterial(id){
+  if(!confirm("Да изтрия ли материала?")) return;
+
+  try{
+    await deleteDoc(doc(db, "materials", id));
+  }catch(err){
+    alert("Грешка при изтриване: " + err.message);
+  }
+}
+
+onSnapshot(query(collection(db, "objects"), orderBy("updatedAt", "desc")), (snapshot)=>{
+  objects = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+  renderObjects();
+
+  if(selectedObjectId && !objects.find(o => o.id === selectedObjectId)){
+    selectedObjectId = null;
+    $("editBox").classList.add("hidden");
+  }
+
+  setStatus("Свързано - обновено: " + new Date().toLocaleTimeString("bg-BG"));
+}, (err)=>{
+  setStatus("Грешка при връзка");
+  alert("Firebase objects error: " + err.message);
+});
+
+onSnapshot(query(collection(db, "materials"), orderBy("updatedAt", "desc")), (snapshot)=>{
+  materials = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+  renderObjects();
+  renderMaterials();
+}, (err)=>{
+  setStatus("Грешка при материали");
+  alert("Firebase materials error: " + err.message);
+});
+</script>
+</body>
+</html>
